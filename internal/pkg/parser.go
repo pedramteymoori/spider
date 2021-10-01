@@ -1,43 +1,64 @@
 package pkg
 
 import (
+	"context"
+	"net/url"
 	"strings"
+	"sync"
 
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/html"
 )
 
 type Reporter struct {
-	data   string
-	report *Report
+	url                  *url.URL
+	data                 string
+	report               *Report
+	accessibilityChannel chan (*accessibilityRequest)
 }
 
 type Report struct {
-	HTMLVersion string
-	Title       string
-	Headings    map[string]int32
-	Links       []string
+	HTMLVersion       string
+	Title             string
+	Headings          map[string]int32
+	InternalLinks     []string
+	ExternalLinks     []string
+	InAccessibleLinks int32
 }
 
-func NewReporter(data string) *Reporter {
+type accessibilityRequest struct {
+	link     string
+	ctx      context.Context
+	doneChan chan (struct{})
+}
+
+func NewReporter(parsedURL *url.URL, data string) *Reporter {
 	r := &Reporter{
-		data: data,
+		url:                  parsedURL,
+		data:                 data,
+		accessibilityChannel: make(chan *accessibilityRequest, 10000),
 		report: &Report{
-			Headings: make(map[string]int32),
-			Links:    make([]string, 0),
+			Headings:      make(map[string]int32),
+			InternalLinks: make([]string, 0),
+			ExternalLinks: make([]string, 0),
 		},
+	}
+
+	for i := 0; i < 100; i++ { // Create background workers
+		go r.checkAccessibility()
 	}
 	return r
 }
 
-func (r *Reporter) GetReport() (*Report, error) {
-	err := r.parseHTML()
+func (r *Reporter) GetReport(ctx context.Context) (*Report, error) {
+	err := r.traverseHTML(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return r.report, nil
 }
 
-func (r *Reporter) parseHTML() error {
+func (r *Reporter) traverseHTML(ctx context.Context) error {
 	reader := strings.NewReader(r.data)
 	doc, err := html.Parse(reader)
 	if err != nil {
@@ -64,6 +85,7 @@ func (r *Reporter) parseHTML() error {
 		}
 	}
 	f(doc)
+	r.checkLinksAccessibility(ctx)
 	return nil
 }
 
@@ -93,9 +115,60 @@ func (r *Reporter) appendHeading(n *html.Node) {
 
 func (r *Reporter) appendLink(n *html.Node) {
 	for _, attr := range n.Attr {
-		if attr.Key == "href" {
-			r.report.Links = append(r.report.Links, attr.Val)
-			break
+		if attr.Key != "href" {
+			continue
 		}
+		link := attr.Val
+		if strings.HasPrefix(link, "#") || strings.HasPrefix(link, "/") { //rabbit.jpg?
+			r.report.InternalLinks = append(r.report.InternalLinks, link)
+		} else if parsed, err := url.Parse(link); err == nil && parsed.Host == r.url.Host {
+			r.report.InternalLinks = append(r.report.InternalLinks, link)
+		} else {
+			r.report.ExternalLinks = append(r.report.ExternalLinks, link)
+		}
+		break
+	}
+}
+
+func (r *Reporter) checkLinksAccessibility(ctx context.Context) {
+	var wg sync.WaitGroup
+
+	for _, link := range r.report.ExternalLinks {
+		wg.Add(1)
+		doneChan := make(chan struct{})
+		req := &accessibilityRequest{
+			ctx:      ctx,
+			doneChan: doneChan,
+			link:     link,
+		}
+
+		r.accessibilityChannel <- req
+		go func() {
+			select {
+			case <-ctx.Done():
+				wg.Done()
+			case <-doneChan:
+				wg.Done()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func (r *Reporter) checkAccessibility() {
+	for {
+		request := <-r.accessibilityChannel
+		func(req *accessibilityRequest) {
+			statusCode, err := getStatusCode(req.ctx, req.link)
+			if err != nil {
+				logrus.Errorf("failed to check accessiblity for %s : %s", req.link, err)
+				req.doneChan <- struct{}{}
+				return
+			}
+			if statusCode < 400 {
+				r.report.InAccessibleLinks++
+			}
+			req.doneChan <- struct{}{}
+		}(request)
 	}
 }
