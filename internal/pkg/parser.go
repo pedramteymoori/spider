@@ -128,12 +128,27 @@ func (r *Reporter) appendLink(n *html.Node) {
 			continue
 		}
 		link := attr.Val
-		if strings.HasPrefix(link, "#") || strings.HasPrefix(link, "/") { //rabbit.jpg?
-			r.report.InternalLinks = append(r.report.InternalLinks, link)
-		} else if parsed, err := url.Parse(link); err == nil && parsed.Host == r.url.Host {
-			r.report.InternalLinks = append(r.report.InternalLinks, link)
+
+		parsed, err := url.Parse(link)
+		if err != nil {
+			logrus.Errorf("failed to parse link : %w", err)
+			continue
+		}
+
+		if parsed.Scheme == "" {
+			parsed.Scheme = r.url.Scheme
+		}
+		if parsed.Host == "" {
+			parsed.Host = r.url.Host
+		}
+		if parsed.Path == "" {
+			parsed.Path = r.url.Path
+		}
+
+		if parsed.Host == r.url.Host {
+			r.report.InternalLinks = append(r.report.InternalLinks, parsed.String())
 		} else {
-			r.report.ExternalLinks = append(r.report.ExternalLinks, link)
+			r.report.ExternalLinks = append(r.report.ExternalLinks, parsed.String())
 		}
 		break
 	}
