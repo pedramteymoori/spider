@@ -24,6 +24,13 @@ type Report struct {
 	InternalLinks     []string
 	ExternalLinks     []string
 	InAccessibleLinks int32
+	HasLogin          bool
+}
+
+type loginFormAttrs struct {
+	textFound     bool
+	passwordFound bool
+	submitFound   bool
 }
 
 type accessibilityRequest struct {
@@ -74,6 +81,8 @@ func (r *Reporter) traverseHTML(ctx context.Context) error {
 			switch n.Data {
 			case "title":
 				r.setTitle(n)
+			case "form":
+				r.checkLoginForm(n)
 			case "a":
 				r.appendLink(n)
 			case "h1", "h2", "h3", "h4", "h5", "h6":
@@ -170,5 +179,43 @@ func (r *Reporter) checkAccessibility() {
 			}
 			req.doneChan <- struct{}{}
 		}(request)
+	}
+}
+
+func (r *Reporter) checkLoginForm(n *html.Node) {
+	lfa := &loginFormAttrs{}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		r.checkForInput(c, lfa)
+		if lfa.passwordFound { // We can also check for submit and text inputs here
+			r.report.HasLogin = true
+			return
+		}
+	}
+}
+
+func (r *Reporter) checkForInput(n *html.Node, lfa *loginFormAttrs) {
+	if n.Data == "input" {
+		for _, attr := range n.Attr {
+			checkForAttributes(attr, lfa)
+		}
+	}
+
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		r.checkForInput(c, lfa)
+	}
+}
+
+func checkForAttributes(attr html.Attribute, lfa *loginFormAttrs) {
+	if attr.Key != "type" {
+		return
+	}
+
+	switch attr.Val {
+	case "text":
+		lfa.textFound = true
+	case "password":
+		lfa.passwordFound = true
+	case "submit":
+		lfa.submitFound = true
 	}
 }
