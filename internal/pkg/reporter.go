@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"sync"
@@ -10,11 +11,19 @@ import (
 	"golang.org/x/net/html"
 )
 
+const (
+	numberOfWorkers = 100
+	channelCapacity = 100000
+)
+
+type IReporter interface {
+	GetReport(ctx context.Context, body string, websiteURL string) (*Report, error)
+}
+
 type Reporter struct {
-	url                  *url.URL
-	data                 string
 	report               *Report
 	accessibilityChannel chan (*accessibilityRequest)
+	Communicator         ICommunicator
 }
 
 type Report struct {
@@ -39,11 +48,10 @@ type accessibilityRequest struct {
 	doneChan chan (struct{})
 }
 
-func NewReporter(parsedURL *url.URL, data string) *Reporter {
+func NewReporter() *Reporter {
 	r := &Reporter{
-		url:                  parsedURL,
-		data:                 data,
-		accessibilityChannel: make(chan *accessibilityRequest, 10000),
+		accessibilityChannel: make(chan *accessibilityRequest, channelCapacity),
+		Communicator:         &Communicator{},
 		report: &Report{
 			Headings:      make(map[string]int32),
 			InternalLinks: make([]string, 0),
@@ -51,22 +59,27 @@ func NewReporter(parsedURL *url.URL, data string) *Reporter {
 		},
 	}
 
-	for i := 0; i < 100; i++ { // Create background workers
+	for i := 0; i < numberOfWorkers; i++ {
 		go r.checkAccessibility()
 	}
 	return r
 }
 
-func (r *Reporter) GetReport(ctx context.Context) (*Report, error) {
-	err := r.traverseHTML(ctx)
+func (r *Reporter) GetReport(ctx context.Context, body string, websiteURL string) (*Report, error) {
+	parsedURL, err := url.Parse(websiteURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse the url : %w", err)
+	}
+
+	err = r.traverseHTML(ctx, body, parsedURL)
 	if err != nil {
 		return nil, err
 	}
 	return r.report, nil
 }
 
-func (r *Reporter) traverseHTML(ctx context.Context) error {
-	reader := strings.NewReader(r.data)
+func (r *Reporter) traverseHTML(ctx context.Context, body string, parsedURL *url.URL) error {
+	reader := strings.NewReader(body)
 	doc, err := html.Parse(reader)
 	if err != nil {
 		return err
@@ -84,7 +97,7 @@ func (r *Reporter) traverseHTML(ctx context.Context) error {
 			case "form":
 				r.checkLoginForm(n)
 			case "a":
-				r.appendLink(n)
+				r.appendLink(n, parsedURL)
 			case "h1", "h2", "h3", "h4", "h5", "h6":
 				r.appendHeading(n)
 			}
@@ -122,7 +135,7 @@ func (r *Reporter) appendHeading(n *html.Node) {
 	}
 }
 
-func (r *Reporter) appendLink(n *html.Node) {
+func (r *Reporter) appendLink(n *html.Node, parsedURL *url.URL) {
 	for _, attr := range n.Attr {
 		if attr.Key != "href" {
 			continue
@@ -131,21 +144,18 @@ func (r *Reporter) appendLink(n *html.Node) {
 
 		parsed, err := url.Parse(link)
 		if err != nil {
-			logrus.Errorf("failed to parse link : %w", err)
+			logrus.Errorf("failed to parse link : %s", err)
 			continue
 		}
 
 		if parsed.Scheme == "" {
-			parsed.Scheme = r.url.Scheme
+			parsed.Scheme = parsedURL.Scheme
 		}
 		if parsed.Host == "" {
-			parsed.Host = r.url.Host
-		}
-		if parsed.Path == "" {
-			parsed.Path = r.url.Path
+			parsed.Host = parsedURL.Host
 		}
 
-		if parsed.Host == r.url.Host {
+		if parsed.Host == parsedURL.Host {
 			r.report.InternalLinks = append(r.report.InternalLinks, parsed.String())
 		} else {
 			r.report.ExternalLinks = append(r.report.ExternalLinks, parsed.String())
@@ -183,13 +193,14 @@ func (r *Reporter) checkAccessibility() {
 	for {
 		request := <-r.accessibilityChannel
 		func(req *accessibilityRequest) {
-			statusCode, err := getStatusCode(req.ctx, req.link)
+			statusCode, err := r.Communicator.GetStatusCode(req.ctx, req.link)
 			if err != nil {
 				logrus.Errorf("failed to check accessiblity for %s : %s", req.link, err)
+				r.report.InAccessibleLinks++
 				req.doneChan <- struct{}{}
 				return
 			}
-			if statusCode < 400 {
+			if statusCode >= 400 {
 				r.report.InAccessibleLinks++
 			}
 			req.doneChan <- struct{}{}

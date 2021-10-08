@@ -9,6 +9,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var instance *spider.Spider
+
+func init() {
+	instance = spider.NewSpider()
+}
+
 func Execute() {
 	http.HandleFunc("/favicon.ico", faviconHandler)
 	http.HandleFunc("/", rootHandler)
@@ -17,7 +23,7 @@ func Execute() {
 }
 
 func rootHandler(w http.ResponseWriter, r *http.Request) {
-	report, err := spider.Run(r.URL)
+	report, err := instance.Run(r.URL)
 	if err != nil {
 		logrus.WithError(err).Error("failed to respond the request")
 		fmt.Fprintf(w, "Internal Error")

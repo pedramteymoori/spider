@@ -11,29 +11,34 @@ import (
 	"github.com/pedramteymoori/spider/internal/pkg"
 )
 
-func Run(requestURL *url.URL) (*pkg.Report, error) {
+type Spider struct {
+	communicator pkg.ICommunicator
+	reporter     pkg.IReporter
+}
+
+func NewSpider() *Spider {
+	return &Spider{
+		communicator: &pkg.Communicator{},
+		reporter:     pkg.NewReporter(),
+	}
+}
+
+func (s *Spider) Run(requestURL *url.URL) (*pkg.Report, error) {
 	websiteURL := requestURL.Query().Get("url")
 	if websiteURL == "" {
 		return nil, errors.New("Please provide webiste url")
 	}
 	websiteURL = strings.Trim(websiteURL, "\"")
 
-	parsedURL, err := url.Parse(websiteURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse the url : %w", err)
-	}
-
-	ctx, cancelFunc := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancelFunc := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancelFunc()
 
-	body, err := pkg.GetBody(ctx, websiteURL)
+	body, err := s.communicator.GetBody(ctx, websiteURL)
 	if err != nil {
 		return nil, fmt.Errorf("error in fetch web page : %w", err)
 	}
 
-	reporter := pkg.NewReporter(parsedURL, body)
-
-	report, err := reporter.GetReport(ctx)
+	report, err := s.reporter.GetReport(ctx, body, websiteURL)
 	if err != nil {
 		return nil, fmt.Errorf("error in parse web page : %w", err)
 	}

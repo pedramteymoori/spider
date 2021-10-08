@@ -9,11 +9,18 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type ICommunicator interface {
+	GetBody(ctx context.Context, url string) (string, error)
+	GetStatusCode(ctx context.Context, url string) (int, error)
+}
+
+type Communicator struct{}
+
 const (
 	httpTimeout = 5 * time.Second
 )
 
-func GetBody(ctx context.Context, url string) (string, error) {
+func (*Communicator) GetBody(ctx context.Context, url string) (string, error) {
 	logrus.Info("trying to fetch : ", url)
 
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
@@ -40,7 +47,7 @@ func GetBody(ctx context.Context, url string) (string, error) {
 	return string(body), nil
 }
 
-func getStatusCode(ctx context.Context, url string) (int, error) {
+func (*Communicator) GetStatusCode(ctx context.Context, url string) (int, error) {
 	logrus.Info("trying to fetch : ", url)
 
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
